@@ -2,9 +2,11 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
@@ -15,6 +17,11 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<any>(null);
   const [prix, setPrix] = useState<any[]>([]);
+  const [showForm, setShowForm] = useState(false);
+  const [newMagasin, setNewMagasin] = useState("");
+  const [newPrix, setNewPrix] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [lastBarcode, setLastBarcode] = useState("");
   const [permission, requestPermission] = useCameraPermissions();
 
   const handleScan = async () => {
@@ -27,6 +34,7 @@ export default function App() {
   const handleBarcode = async (result: any) => {
     setScanning(false);
     setLoading(true);
+    setLastBarcode(result.data);
     try {
       const response = await fetch(
         `https://world.openfoodfacts.org/api/v0/product/${result.data}.json`,
@@ -46,6 +54,36 @@ export default function App() {
       alert("Erreur de connexion.");
     }
     setLoading(false);
+  };
+
+  const submitPrix = async () => {
+    if (!newMagasin || !newPrix) {
+      alert("Remplis le magasin et le prix !");
+      return;
+    }
+    setSubmitting(true);
+    const { error } = await supabase.from("prix").insert({
+      code_barres: lastBarcode,
+      magasin: newMagasin,
+      prix: parseFloat(newPrix.replace(",", ".")),
+      ville: "France",
+    });
+    if (!error) {
+      alert("✅ Prix soumis, merci !");
+      setShowForm(false);
+      setNewMagasin("");
+      setNewPrix("");
+      // Rafraîchir les prix
+      const { data: prixData } = await supabase
+        .from("prix")
+        .select("*")
+        .eq("code_barres", lastBarcode)
+        .order("prix", { ascending: true });
+      if (prixData) setPrix(prixData);
+    } else {
+      alert("Erreur lors de la soumission.");
+    }
+    setSubmitting(false);
   };
 
   const getPrixMoyen = () => {
@@ -179,9 +217,60 @@ export default function App() {
           )}
         </View>
 
+        {/* Bouton soumettre un prix */}
+        <TouchableOpacity
+          style={styles.submitButton}
+          onPress={() => setShowForm(true)}
+        >
+          <Text style={styles.submitButtonText}>💰 Soumettre un prix</Text>
+        </TouchableOpacity>
+
         <TouchableOpacity style={styles.scanButton} onPress={handleScan}>
           <Text style={styles.scanText}>📷 Scanner un autre produit</Text>
         </TouchableOpacity>
+
+        {/* Modal formulaire */}
+        <Modal visible={showForm} transparent animationType="slide">
+          <View style={styles.modalOverlay}>
+            <View style={styles.modalCard}>
+              <Text style={styles.modalTitle}>💰 Soumettre un prix</Text>
+              <Text style={styles.modalSub}>{product.product_name}</Text>
+
+              <TextInput
+                style={styles.input}
+                placeholder="Magasin (ex: Carrefour)"
+                placeholderTextColor="#6b7080"
+                value={newMagasin}
+                onChangeText={setNewMagasin}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="Prix (ex: 1.09)"
+                placeholderTextColor="#6b7080"
+                value={newPrix}
+                onChangeText={setNewPrix}
+                keyboardType="decimal-pad"
+              />
+
+              <TouchableOpacity
+                style={styles.confirmButton}
+                onPress={submitPrix}
+                disabled={submitting}
+              >
+                <Text style={styles.confirmText}>
+                  {submitting ? "Envoi..." : "✅ Confirmer"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.cancelFormButton}
+                onPress={() => setShowForm(false)}
+              >
+                <Text style={styles.cancelFormText}>Annuler</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
       </ScrollView>
     );
   }
@@ -224,14 +313,26 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   scanButton: {
+    backgroundColor: "#1c1e27",
+    borderRadius: 16,
+    padding: 16,
+    paddingHorizontal: 28,
+    marginTop: 10,
+    borderWidth: 1,
+    borderColor: "#2a2d3a",
+  },
+  submitButton: {
     backgroundColor: "#00e5a0",
     borderRadius: 16,
     padding: 16,
     paddingHorizontal: 28,
     marginTop: 10,
+    width: "100%",
+    alignItems: "center",
   },
+  submitButtonText: { color: "#0a1a12", fontWeight: "700", fontSize: 15 },
   scanIcon: { fontSize: 52, marginBottom: 8 },
-  scanText: { color: "#0a1a12", fontWeight: "700", fontSize: 15 },
+  scanText: { color: "#f0f2ff", fontWeight: "700", fontSize: 15 },
   hint: { color: "#6b7080", fontSize: 13, marginTop: 16 },
   camera: { flex: 1, width: "100%" },
   cancelButton: {
@@ -306,4 +407,44 @@ const styles = StyleSheet.create({
     marginTop: 6,
     textAlign: "center",
   },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.7)",
+    justifyContent: "flex-end",
+  },
+  modalCard: {
+    backgroundColor: "#16181f",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: 28,
+    borderWidth: 1,
+    borderColor: "#2a2d3a",
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#f0f2ff",
+    marginBottom: 4,
+  },
+  modalSub: { fontSize: 13, color: "#6b7080", marginBottom: 20 },
+  input: {
+    backgroundColor: "#0e0f13",
+    borderWidth: 1,
+    borderColor: "#2a2d3a",
+    borderRadius: 12,
+    padding: 14,
+    color: "#f0f2ff",
+    fontSize: 15,
+    marginBottom: 12,
+  },
+  confirmButton: {
+    backgroundColor: "#00e5a0",
+    borderRadius: 14,
+    padding: 16,
+    alignItems: "center",
+    marginBottom: 10,
+  },
+  confirmText: { color: "#0a1a12", fontWeight: "700", fontSize: 16 },
+  cancelFormButton: { alignItems: "center", padding: 12 },
+  cancelFormText: { color: "#6b7080", fontSize: 15 },
 });
