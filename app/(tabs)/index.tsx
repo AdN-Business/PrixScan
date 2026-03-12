@@ -8,16 +8,19 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { supabase } from "../../supabase";
 
 export default function App() {
   const [scanning, setScanning] = useState(false);
   const [loading, setLoading] = useState(false);
   const [product, setProduct] = useState<any>(null);
+  const [prix, setPrix] = useState<any[]>([]);
   const [permission, requestPermission] = useCameraPermissions();
 
   const handleScan = async () => {
     if (!permission?.granted) await requestPermission();
     setProduct(null);
+    setPrix([]);
     setScanning(true);
   };
 
@@ -31,10 +34,45 @@ export default function App() {
       const data = await response.json();
       if (data.status === 1) setProduct(data.product);
       else alert("Produit non trouvé.");
+
+      const { data: prixData, error } = await supabase
+        .from("prix")
+        .select("*")
+        .eq("code_barres", result.data)
+        .order("prix", { ascending: true });
+
+      if (!error && prixData) setPrix(prixData);
     } catch (e) {
       alert("Erreur de connexion.");
     }
     setLoading(false);
+  };
+
+  const getPrixMoyen = () => {
+    if (prix.length === 0) return null;
+    const total = prix.reduce((acc, p) => acc + p.prix, 0);
+    return (total / prix.length).toFixed(2);
+  };
+
+  const getVerdict = (p: number) => {
+    const moyen = parseFloat(getPrixMoyen() || "0");
+    if (p <= moyen * 0.95)
+      return {
+        label: "✅ Bon prix",
+        color: "#00e5a0",
+        bg: "rgba(0,229,160,0.12)",
+      };
+    if (p <= moyen * 1.05)
+      return {
+        label: "👌 Prix normal",
+        color: "#f5c542",
+        bg: "rgba(245,197,66,0.12)",
+      };
+    return {
+      label: "⚠️ Prix élevé",
+      color: "#ff4f4f",
+      bg: "rgba(255,79,79,0.12)",
+    };
   };
 
   if (scanning) {
@@ -73,6 +111,8 @@ export default function App() {
       D: "#ff914d",
       E: "#ff4f4f",
     };
+    const prixMoyen = getPrixMoyen();
+
     return (
       <ScrollView
         style={styles.scrollContainer}
@@ -81,6 +121,7 @@ export default function App() {
         <Text style={styles.logo}>
           Prix<Text style={styles.logoAccent}>Scan</Text>
         </Text>
+
         <View style={styles.productCard}>
           <Text style={styles.productName}>
             {product.product_name || "Nom inconnu"}
@@ -98,23 +139,46 @@ export default function App() {
               <Text style={styles.nutriText}>Nutri-score {nutriscore}</Text>
             </View>
           </View>
+
           <View style={styles.separator} />
-          <Text style={styles.sectionTitle}>💰 Prix par magasin</Text>
-          {[
-            { name: "Aldi", price: "0,99 €", color: "#00e5a0" },
-            { name: "Leclerc", price: "1,05 €", color: "#00e5a0" },
-            { name: "Carrefour", price: "1,09 €", color: "#f0f2ff" },
-            { name: "Intermarché", price: "1,25 €", color: "#f5c542" },
-            { name: "Monoprix", price: "1,49 €", color: "#ff4f4f" },
-          ].map((store) => (
-            <View key={store.name} style={styles.storeRow}>
-              <Text style={styles.storeName}>{store.name}</Text>
-              <Text style={[styles.storePrice, { color: store.color }]}>
-                {store.price}
+
+          {prixMoyen ? (
+            <>
+              <Text style={styles.sectionTitle}>💰 Prix moyen</Text>
+              <Text style={styles.priceMain}>{prixMoyen} €</Text>
+              <View style={styles.separator} />
+              <Text style={styles.sectionTitle}>🏪 Prix par magasin</Text>
+              {prix.map((p, i) => {
+                const v = getVerdict(p.prix);
+                return (
+                  <View key={i} style={styles.storeRow}>
+                    <Text style={styles.storeName}>{p.magasin}</Text>
+                    <View style={{ alignItems: "flex-end" }}>
+                      <Text style={[styles.storePrice, { color: v.color }]}>
+                        {p.prix.toFixed(2)} €
+                      </Text>
+                      <View
+                        style={[styles.verdictChip, { backgroundColor: v.bg }]}
+                      >
+                        <Text style={[styles.verdictText, { color: v.color }]}>
+                          {v.label}
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                );
+              })}
+            </>
+          ) : (
+            <View style={styles.noPrixBox}>
+              <Text style={styles.noPrixText}>Aucun prix enregistré.</Text>
+              <Text style={styles.noPrixSub}>
+                Soyez le premier à soumettre un prix !
               </Text>
             </View>
-          ))}
+          )}
         </View>
+
         <TouchableOpacity style={styles.scanButton} onPress={handleScan}>
           <Text style={styles.scanText}>📷 Scanner un autre produit</Text>
         </TouchableOpacity>
@@ -206,13 +270,40 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginBottom: 10,
   },
+  priceMain: {
+    fontSize: 36,
+    fontWeight: "800",
+    color: "#f0f2ff",
+    marginBottom: 8,
+  },
   storeRow: {
     flexDirection: "row",
     justifyContent: "space-between",
+    alignItems: "center",
     paddingVertical: 10,
     borderBottomWidth: 1,
     borderBottomColor: "#2a2d3a",
   },
   storeName: { color: "#f0f2ff", fontSize: 15 },
   storePrice: { fontWeight: "700", fontSize: 15 },
+  verdictChip: {
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    marginTop: 3,
+  },
+  verdictText: { fontSize: 11, fontWeight: "600" },
+  noPrixBox: { alignItems: "center", padding: 20 },
+  noPrixText: {
+    color: "#f0f2ff",
+    fontWeight: "600",
+    fontSize: 15,
+    textAlign: "center",
+  },
+  noPrixSub: {
+    color: "#6b7080",
+    fontSize: 13,
+    marginTop: 6,
+    textAlign: "center",
+  },
 });
