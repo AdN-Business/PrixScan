@@ -1,6 +1,7 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
@@ -8,18 +9,29 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { supabase } from "../../supabase";
 
 type Item = {
   id: string;
   nom: string;
   prix: string;
+  code_barres?: string;
   checked: boolean;
+};
+
+type MagasinTotal = {
+  magasin: string;
+  total: number;
+  produitsManquants: number;
 };
 
 export default function Liste() {
   const [items, setItems] = useState<Item[]>([]);
   const [newNom, setNewNom] = useState("");
   const [newPrix, setNewPrix] = useState("");
+  const [optimisation, setOptimisation] = useState<MagasinTotal[]>([]);
+  const [loadingOptim, setLoadingOptim] = useState(false);
+  const [showOptim, setShowOptim] = useState(false);
 
   useEffect(() => {
     chargerListe();
@@ -56,6 +68,70 @@ export default function Liste() {
 
   const supprimerItem = (id: string) => {
     sauvegarder(items.filter((i) => i.id !== id));
+  };
+
+  const optimiserCaddie = async () => {
+    setLoadingOptim(true);
+    setShowOptim(true);
+
+    try {
+      const produitsAvecCode = items.filter((i) => i.code_barres && !i.checked);
+
+      if (produitsAvecCode.length === 0) {
+        alert(
+          "Scanne des produits depuis le scanner pour optimiser ton caddie !",
+        );
+        setShowOptim(false);
+        setLoadingOptim(false);
+        return;
+      }
+
+      const codes = produitsAvecCode.map((i) => i.code_barres);
+      const { data: prixData, error } = await supabase
+        .from("prix")
+        .select("*")
+        .in("code_barres", codes as string[]);
+
+      if (error || !prixData) {
+        alert("Erreur lors de la récupération des prix.");
+        setLoadingOptim(false);
+        return;
+      }
+
+      // Grouper par magasin
+      const magasins: {
+        [key: string]: { total: number; produits: Set<string> };
+      } = {};
+
+      for (const produit of produitsAvecCode) {
+        const prixProduit = prixData.filter(
+          (p) => p.code_barres === produit.code_barres,
+        );
+        for (const p of prixProduit) {
+          if (!magasins[p.magasin]) {
+            magasins[p.magasin] = { total: 0, produits: new Set() };
+          }
+          // Prendre le prix le plus récent par magasin/produit
+          if (!magasins[p.magasin].produits.has(p.code_barres)) {
+            magasins[p.magasin].total += p.prix;
+            magasins[p.magasin].produits.add(p.code_barres);
+          }
+        }
+      }
+
+      const resultats: MagasinTotal[] = Object.entries(magasins)
+        .map(([magasin, data]) => ({
+          magasin,
+          total: parseFloat(data.total.toFixed(2)),
+          produitsManquants: produitsAvecCode.length - data.produits.size,
+        }))
+        .sort((a, b) => a.total - b.total);
+
+      setOptimisation(resultats);
+    } catch (e) {
+      alert("Erreur.");
+    }
+    setLoadingOptim(false);
   };
 
   const total = items
@@ -97,6 +173,69 @@ export default function Liste() {
         </View>
       </View>
 
+      {/* Bouton optimiser */}
+      <TouchableOpacity style={styles.optimBtn} onPress={optimiserCaddie}>
+        <Text style={styles.optimBtnText}>🛒 Optimise mon caddie</Text>
+      </TouchableOpacity>
+
+      {/* Résultats optimisation */}
+      {showOptim && (
+        <View style={styles.optimCard}>
+          <Text style={styles.optimTitle}>
+            📊 Meilleur magasin pour ta liste
+          </Text>
+          {loadingOptim ? (
+            <ActivityIndicator color="#00e5a0" style={{ marginTop: 12 }} />
+          ) : optimisation.length === 0 ? (
+            <Text style={styles.optimEmpty}>
+              Pas assez de données pour ta liste.
+            </Text>
+          ) : (
+            optimisation.map((m, i) => (
+              <View
+                key={m.magasin}
+                style={[styles.optimRow, i === 0 && styles.optimRowBest]}
+              >
+                <View style={styles.optimLeft}>
+                  {i === 0 && <Text style={styles.optimCrown}>👑</Text>}
+                  <Text
+                    style={[
+                      styles.optimMagasin,
+                      i === 0 && { color: "#00e5a0" },
+                    ]}
+                  >
+                    {m.magasin}
+                  </Text>
+                  {m.produitsManquants > 0 && (
+                    <Text style={styles.optimManquant}>
+                      {m.produitsManquants} produit(s) manquant(s)
+                    </Text>
+                  )}
+                </View>
+                <View style={styles.optimRight}>
+                  <Text
+                    style={[styles.optimTotal, i === 0 && { color: "#00e5a0" }]}
+                  >
+                    {m.total.toFixed(2)} €
+                  </Text>
+                  {i > 0 && (
+                    <Text style={styles.optimDiff}>
+                      +{(m.total - optimisation[0].total).toFixed(2)} €
+                    </Text>
+                  )}
+                </View>
+              </View>
+            ))
+          )}
+          <TouchableOpacity
+            onPress={() => setShowOptim(false)}
+            style={styles.closeOptim}
+          >
+            <Text style={styles.closeOptimText}>Fermer</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* Formulaire ajout */}
       <View style={styles.form}>
         <TextInput
@@ -124,7 +263,7 @@ export default function Liste() {
         <View style={styles.emptyBox}>
           <Text style={styles.emptyText}>Ta liste est vide 🛒</Text>
           <Text style={styles.emptySub}>
-            Ajoute des produits ou scanne un code-barres !
+            Scanne un produit et ajoute-le à ta liste !
           </Text>
         </View>
       ) : (
@@ -150,6 +289,9 @@ export default function Liste() {
                   {parseFloat(item.prix).toFixed(2)} €
                 </Text>
               ) : null}
+              {item.code_barres && (
+                <Text style={styles.itemCode}>✅ Prix comparables</Text>
+              )}
             </View>
             <TouchableOpacity
               onPress={() => supprimerItem(item.id)}
@@ -180,7 +322,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#16181f",
     borderRadius: 16,
     padding: 16,
-    marginBottom: 16,
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: "#2a2d3a",
     justifyContent: "space-around",
@@ -188,6 +330,58 @@ const styles = StyleSheet.create({
   summaryItem: { alignItems: "center" },
   summaryVal: { fontSize: 22, fontWeight: "800", color: "#f0f2ff" },
   summaryLabel: { fontSize: 11, color: "#6b7080", marginTop: 2 },
+  optimBtn: {
+    backgroundColor: "#00e5a0",
+    borderRadius: 14,
+    padding: 16,
+    alignItems: "center",
+    marginBottom: 12,
+  },
+  optimBtnText: { color: "#0a1a12", fontWeight: "800", fontSize: 16 },
+  optimCard: {
+    backgroundColor: "#16181f",
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: "#2a2d3a",
+  },
+  optimTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#f0f2ff",
+    marginBottom: 12,
+  },
+  optimEmpty: {
+    color: "#6b7080",
+    fontSize: 13,
+    textAlign: "center",
+    padding: 12,
+  },
+  optimRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: "#2a2d3a",
+  },
+  optimRowBest: {
+    backgroundColor: "rgba(0,229,160,0.05)",
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    borderBottomWidth: 0,
+    marginBottom: 4,
+  },
+  optimLeft: { flex: 1 },
+  optimCrown: { fontSize: 16, marginBottom: 2 },
+  optimMagasin: { color: "#f0f2ff", fontWeight: "700", fontSize: 15 },
+  optimManquant: { color: "#f5c542", fontSize: 11, marginTop: 2 },
+  optimRight: { alignItems: "flex-end" },
+  optimTotal: { fontWeight: "800", fontSize: 18, color: "#f0f2ff" },
+  optimDiff: { color: "#ff4f4f", fontSize: 12, marginTop: 2 },
+  closeOptim: { alignItems: "center", marginTop: 12 },
+  closeOptimText: { color: "#6b7080", fontSize: 13 },
   form: { flexDirection: "row", gap: 8, marginBottom: 16 },
   input: {
     backgroundColor: "#16181f",
@@ -233,6 +427,7 @@ const styles = StyleSheet.create({
   itemNom: { color: "#f0f2ff", fontWeight: "600", fontSize: 15 },
   itemNomChecked: { textDecorationLine: "line-through" },
   itemPrix: { color: "#00e5a0", fontSize: 13, marginTop: 2 },
+  itemCode: { color: "#6b7080", fontSize: 11, marginTop: 2 },
   deleteBtn: { padding: 4 },
   deleteText: { color: "#6b7080", fontSize: 16 },
   emptyBox: { alignItems: "center", paddingTop: 60 },

@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useState } from "react";
 import {
@@ -224,8 +225,62 @@ export default function App() {
         >
           <Text style={styles.submitButtonText}>💰 Soumettre un prix</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.addToListBtn}
+          onPress={async () => {
+            const item = {
+              id: Date.now().toString(),
+              nom: product.product_name || "Produit inconnu",
+              prix:
+                prix.length > 0
+                  ? (
+                      prix.reduce((a: number, p: any) => a + p.prix, 0) /
+                      prix.length
+                    ).toFixed(2)
+                  : "",
+              code_barres: lastBarcode,
+              checked: false,
+            };
+            const existing = await AsyncStorage.getItem("liste_courses");
+            const liste = existing ? JSON.parse(existing) : [];
+            await AsyncStorage.setItem(
+              "liste_courses",
+              JSON.stringify([...liste, item]),
+            );
+            alert("✅ Ajouté à ta liste de courses !");
+          }}
+        >
+          <Text style={styles.addToListBtnText}>📋 Ajouter à ma liste</Text>
+        </TouchableOpacity>
 
         <TouchableOpacity style={styles.scanButton} onPress={handleScan}>
+          <TouchableOpacity
+            style={styles.addToListBtn}
+            onPress={async () => {
+              const item = {
+                id: Date.now().toString(),
+                nom: product.product_name || "Produit inconnu",
+                prix:
+                  prix.length > 0
+                    ? (
+                        prix.reduce((a: number, p: any) => a + p.prix, 0) /
+                        prix.length
+                      ).toFixed(2)
+                    : "",
+                code_barres: lastBarcode,
+                checked: false,
+              };
+              const existing = await AsyncStorage.getItem("liste_courses");
+              const liste = existing ? JSON.parse(existing) : [];
+              await AsyncStorage.setItem(
+                "liste_courses",
+                JSON.stringify([...liste, item]),
+              );
+              alert("✅ Ajouté à ta liste de courses !");
+            }}
+          >
+            <Text style={styles.addToListBtnText}>📋 Ajouter à ma liste</Text>
+          </TouchableOpacity>
           <Text style={styles.scanText}>📷 Scanner un autre produit</Text>
         </TouchableOpacity>
 
@@ -387,6 +442,18 @@ const styles = StyleSheet.create({
   },
   storeName: { color: "#f0f2ff", fontSize: 15 },
   storePrice: { fontWeight: "700", fontSize: 15 },
+  addToListBtn: {
+    backgroundColor: "#1c1e27",
+    borderRadius: 16,
+    padding: 16,
+    paddingHorizontal: 28,
+    marginTop: 10,
+    width: "100%",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#00e5a0",
+  },
+  addToListBtnText: { color: "#00e5a0", fontWeight: "700", fontSize: 15 },
   verdictChip: {
     borderRadius: 10,
     paddingHorizontal: 8,
