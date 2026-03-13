@@ -322,7 +322,7 @@ export default function App() {
                 return (
                   <View key={i} style={styles.storeRow}>
                     <Text style={styles.storeName}>{p.magasin}</Text>
-                    <View style={{ alignItems: "flex-end" }}>
+                    <View style={{ alignItems: "flex-end", flex: 1 }}>
                       <Text style={[styles.storePrice, { color: v.color }]}>
                         {p.prix.toFixed(2)} €
                       </Text>
@@ -334,6 +334,20 @@ export default function App() {
                         </Text>
                       </View>
                     </View>
+                    <TouchableOpacity
+                      style={styles.flagBtn}
+                      onPress={async () => {
+                        await supabase.from("signalements").insert({
+                          prix_id: p.id,
+                          code_barres: p.code_barres,
+                          magasin: p.magasin,
+                          raison: "Prix incorrect",
+                        });
+                        alert("🚩 Prix signalé, merci !");
+                      }}
+                    >
+                      <Text style={styles.flagText}>🚩</Text>
+                    </TouchableOpacity>
                   </View>
                 );
               })}
@@ -619,6 +633,8 @@ const styles = StyleSheet.create({
     marginTop: 3,
   },
   verdictText: { fontSize: 11, fontWeight: "600" },
+  flagBtn: { padding: 6, marginLeft: 8 },
+  flagText: { fontSize: 16 },
   noPrixBox: { alignItems: "center", padding: 20 },
   noPrixText: {
     color: "#f0f2ff",
