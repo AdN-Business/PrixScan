@@ -1,8 +1,10 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CameraView, useCameraPermissions } from "expo-camera";
+import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Modal,
   ScrollView,
   StyleSheet,
@@ -11,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { GOOGLE_VISION_KEY } from "../../config";
 import { supabase } from "../../supabase";
 
 export default function App() {
@@ -23,6 +26,9 @@ export default function App() {
   const [newPrix, setNewPrix] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [lastBarcode, setLastBarcode] = useState("");
+  const [photo, setPhoto] = useState<string | null>(null);
+  const [validatingPhoto, setValidatingPhoto] = useState(false);
+  const [photoValidee, setPhotoValidee] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
 
   const handleScan = async () => {
@@ -57,32 +63,156 @@ export default function App() {
     setLoading(false);
   };
 
+  const prendrePhoto = async () => {
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      base64: true,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setPhoto(result.assets[0].uri);
+      await validerPhotoIA(result.assets[0].base64!, result.assets[0].uri);
+    }
+  };
+
+  const choisirGalerie = async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.7,
+      base64: true,
+    });
+
+    if (!result.canceled && result.assets[0]) {
+      setPhoto(result.assets[0].uri);
+      await validerPhotoIA(result.assets[0].base64!, result.assets[0].uri);
+    }
+  };
+
+  const validerPhotoIA = async (base64: string, uri: string) => {
+    setValidatingPhoto(true);
+    setPhotoValidee(false);
+    try {
+      const response = await fetch(
+        `https://vision.googleapis.com/v1/images:annotate?key=${GOOGLE_VISION_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requests: [
+              {
+                image: { content: base64 },
+                features: [{ type: "TEXT_DETECTION", maxResults: 10 }],
+              },
+            ],
+          }),
+        },
+      );
+
+      const data = await response.json();
+      const texte = data.responses?.[0]?.fullTextAnnotation?.text || "";
+
+      // Cherche un prix dans le texte (ex: 1.09, 1,09, €1.09)
+      const prixSaisi = parseFloat(newPrix.replace(",", "."));
+      const regex = /(\d+[.,]\d{1,2})/g;
+      const prixTrouves = (texte.match(regex) || []).map((p: string) =>
+        parseFloat(p.replace(",", ".")),
+      );
+
+      const tolerance = 0.15; // 15 centimes de tolérance
+      const prixValide = prixTrouves.some(
+        (p: number) => Math.abs(p - prixSaisi) <= tolerance,
+      );
+
+      if (prixValide) {
+        setPhotoValidee(true);
+      } else if (prixTrouves.length === 0) {
+        // Pas de prix trouvé sur la photo — on accepte quand même
+        setPhotoValidee(true);
+        alert(
+          "⚠️ Aucun prix lisible sur la photo, mais on accepte quand même. Merci !",
+        );
+      } else {
+        setPhotoValidee(false);
+        alert(
+          `❌ Le prix sur la photo (${prixTrouves[0]}€) ne correspond pas au prix saisi (${newPrix}€). Vérifie et réessaie.`,
+        );
+        setPhoto(null);
+      }
+    } catch (e) {
+      // En cas d'erreur API on accepte quand même
+      setPhotoValidee(true);
+    }
+    setValidatingPhoto(false);
+  };
+
   const submitPrix = async () => {
     if (!newMagasin || !newPrix) {
       alert("Remplis le magasin et le prix !");
       return;
     }
+    if (!photo || !photoValidee) {
+      alert(
+        "📸 Une photo de l'étiquette est obligatoire pour soumettre un prix !",
+      );
+      return;
+    }
+
     setSubmitting(true);
-    const { error } = await supabase.from("prix").insert({
-      code_barres: lastBarcode,
-      magasin: newMagasin,
-      prix: parseFloat(newPrix.replace(",", ".")),
-      ville: "France",
-    });
-    if (!error) {
-      alert("✅ Prix soumis, merci !");
-      setShowForm(false);
-      setNewMagasin("");
-      setNewPrix("");
-      // Rafraîchir les prix
-      const { data: prixData } = await supabase
-        .from("prix")
-        .select("*")
-        .eq("code_barres", lastBarcode)
-        .order("prix", { ascending: true });
-      if (prixData) setPrix(prixData);
-    } else {
-      alert("Erreur lors de la soumission.");
+    try {
+      // Détection aberrations
+      const prixSoumis = parseFloat(newPrix.replace(",", "."));
+      if (prix.length >= 2) {
+        const moyenne =
+          prix.reduce((a: number, p: any) => a + p.prix, 0) / prix.length;
+        if (prixSoumis > moyenne * 3 || prixSoumis < moyenne / 3) {
+          alert(
+            "❌ Ce prix semble aberrant par rapport aux autres prix connus. Vérifiez et réessayez.",
+          );
+          setSubmitting(false);
+          return;
+        }
+      }
+      // Upload photo sur Supabase Storage
+      const fileName = `${lastBarcode}_${Date.now()}.jpg`;
+      const response = await fetch(photo);
+      const blob = await response.blob();
+
+      const { error: uploadError } = await supabase.storage
+        .from("photos-prix")
+        .upload(fileName, blob, { contentType: "image/jpeg" });
+
+      if (uploadError) {
+        console.log("Upload error:", uploadError);
+      }
+
+      // Sauvegarder le prix
+      const { error } = await supabase.from("prix").insert({
+        code_barres: lastBarcode,
+        magasin: newMagasin,
+        prix: parseFloat(newPrix.replace(",", ".")),
+        ville: "France",
+      });
+
+      if (!error) {
+        alert("✅ Prix soumis et validé par IA, merci !");
+        setShowForm(false);
+        setNewMagasin("");
+        setNewPrix("");
+        setPhoto(null);
+        setPhotoValidee(false);
+
+        const { data: prixData } = await supabase
+          .from("prix")
+          .select("*")
+          .eq("code_barres", lastBarcode)
+          .order("prix", { ascending: true });
+        if (prixData) setPrix(prixData);
+      } else {
+        alert("Erreur lors de la soumission.");
+      }
+    } catch (e) {
+      alert("Erreur.");
     }
     setSubmitting(false);
   };
@@ -218,13 +348,13 @@ export default function App() {
           )}
         </View>
 
-        {/* Bouton soumettre un prix */}
         <TouchableOpacity
           style={styles.submitButton}
           onPress={() => setShowForm(true)}
         >
           <Text style={styles.submitButtonText}>💰 Soumettre un prix</Text>
         </TouchableOpacity>
+
         <TouchableOpacity
           style={styles.addToListBtn}
           onPress={async () => {
@@ -254,37 +384,10 @@ export default function App() {
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.scanButton} onPress={handleScan}>
-          <TouchableOpacity
-            style={styles.addToListBtn}
-            onPress={async () => {
-              const item = {
-                id: Date.now().toString(),
-                nom: product.product_name || "Produit inconnu",
-                prix:
-                  prix.length > 0
-                    ? (
-                        prix.reduce((a: number, p: any) => a + p.prix, 0) /
-                        prix.length
-                      ).toFixed(2)
-                    : "",
-                code_barres: lastBarcode,
-                checked: false,
-              };
-              const existing = await AsyncStorage.getItem("liste_courses");
-              const liste = existing ? JSON.parse(existing) : [];
-              await AsyncStorage.setItem(
-                "liste_courses",
-                JSON.stringify([...liste, item]),
-              );
-              alert("✅ Ajouté à ta liste de courses !");
-            }}
-          >
-            <Text style={styles.addToListBtnText}>📋 Ajouter à ma liste</Text>
-          </TouchableOpacity>
           <Text style={styles.scanText}>📷 Scanner un autre produit</Text>
         </TouchableOpacity>
 
-        {/* Modal formulaire */}
+        {/* Modal soumission prix */}
         <Modal visible={showForm} transparent animationType="slide">
           <View style={styles.modalOverlay}>
             <View style={styles.modalCard}>
@@ -307,10 +410,59 @@ export default function App() {
                 keyboardType="decimal-pad"
               />
 
+              {/* Section photo */}
+              <Text style={styles.photoLabel}>
+                📸 Photo de l'étiquette (obligatoire)
+              </Text>
+              <View style={styles.photoRow}>
+                <TouchableOpacity
+                  style={styles.photoBtn}
+                  onPress={prendrePhoto}
+                >
+                  <Text style={styles.photoBtnText}>📷 Caméra</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.photoBtn}
+                  onPress={choisirGalerie}
+                >
+                  <Text style={styles.photoBtnText}>🖼️ Galerie</Text>
+                </TouchableOpacity>
+              </View>
+
+              {photo && (
+                <View style={styles.photoPreview}>
+                  <Image source={{ uri: photo }} style={styles.photoImg} />
+                  {validatingPhoto && (
+                    <View style={styles.photoOverlay}>
+                      <ActivityIndicator color="#00e5a0" />
+                      <Text style={styles.photoOverlayText}>
+                        Validation IA...
+                      </Text>
+                    </View>
+                  )}
+                  {!validatingPhoto && photoValidee && (
+                    <View
+                      style={[
+                        styles.photoOverlay,
+                        { backgroundColor: "rgba(0,229,160,0.15)" },
+                      ]}
+                    >
+                      <Text style={{ fontSize: 24 }}>✅</Text>
+                      <Text style={styles.photoOverlayText}>
+                        Photo validée !
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              )}
+
               <TouchableOpacity
-                style={styles.confirmButton}
+                style={[
+                  styles.confirmButton,
+                  (!photoValidee || submitting) && { opacity: 0.5 },
+                ]}
                 onPress={submitPrix}
-                disabled={submitting}
+                disabled={!photoValidee || submitting}
               >
                 <Text style={styles.confirmText}>
                   {submitting ? "Envoi..." : "✅ Confirmer"}
@@ -319,7 +471,11 @@ export default function App() {
 
               <TouchableOpacity
                 style={styles.cancelFormButton}
-                onPress={() => setShowForm(false)}
+                onPress={() => {
+                  setShowForm(false);
+                  setPhoto(null);
+                  setPhotoValidee(false);
+                }}
               >
                 <Text style={styles.cancelFormText}>Annuler</Text>
               </TouchableOpacity>
@@ -373,6 +529,8 @@ const styles = StyleSheet.create({
     padding: 16,
     paddingHorizontal: 28,
     marginTop: 10,
+    width: "100%",
+    alignItems: "center",
     borderWidth: 1,
     borderColor: "#2a2d3a",
   },
@@ -386,6 +544,18 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   submitButtonText: { color: "#0a1a12", fontWeight: "700", fontSize: 15 },
+  addToListBtn: {
+    backgroundColor: "#1c1e27",
+    borderRadius: 16,
+    padding: 16,
+    paddingHorizontal: 28,
+    marginTop: 10,
+    width: "100%",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#00e5a0",
+  },
+  addToListBtnText: { color: "#00e5a0", fontWeight: "700", fontSize: 15 },
   scanIcon: { fontSize: 52, marginBottom: 8 },
   scanText: { color: "#f0f2ff", fontWeight: "700", fontSize: 15 },
   hint: { color: "#6b7080", fontSize: 13, marginTop: 16 },
@@ -442,18 +612,6 @@ const styles = StyleSheet.create({
   },
   storeName: { color: "#f0f2ff", fontSize: 15 },
   storePrice: { fontWeight: "700", fontSize: 15 },
-  addToListBtn: {
-    backgroundColor: "#1c1e27",
-    borderRadius: 16,
-    padding: 16,
-    paddingHorizontal: 28,
-    marginTop: 10,
-    width: "100%",
-    alignItems: "center",
-    borderWidth: 1,
-    borderColor: "#00e5a0",
-  },
-  addToListBtnText: { color: "#00e5a0", fontWeight: "700", fontSize: 15 },
   verdictChip: {
     borderRadius: 10,
     paddingHorizontal: 8,
@@ -504,6 +662,37 @@ const styles = StyleSheet.create({
     fontSize: 15,
     marginBottom: 12,
   },
+  photoLabel: { fontSize: 13, color: "#6b7080", marginBottom: 10 },
+  photoRow: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  photoBtn: {
+    flex: 1,
+    backgroundColor: "#0e0f13",
+    borderWidth: 1,
+    borderColor: "#2a2d3a",
+    borderRadius: 12,
+    padding: 12,
+    alignItems: "center",
+  },
+  photoBtnText: { color: "#f0f2ff", fontWeight: "600" },
+  photoPreview: {
+    borderRadius: 12,
+    overflow: "hidden",
+    marginBottom: 12,
+    height: 150,
+    position: "relative",
+  },
+  photoImg: { width: "100%", height: "100%", resizeMode: "cover" },
+  photoOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  photoOverlayText: { color: "#fff", fontWeight: "700", marginTop: 8 },
   confirmButton: {
     backgroundColor: "#00e5a0",
     borderRadius: 14,
